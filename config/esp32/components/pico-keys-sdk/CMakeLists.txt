@@ -15,8 +15,12 @@ set(PICOKEYS_REQUIRES
     esp_tinyusb
     efuse
     mbedtls
-    tinycbor
 )
+if(USB_ITF_HID)
+    list(APPEND PICOKEYS_REQUIRES
+        tinycbor
+    )
+endif()
 
 if (USB_ITF_LWIP)
     list(APPEND PICOKEYS_REQUIRES
