@@ -88,7 +88,16 @@ int driver_init_hid(void) {
 #ifndef ENABLE_EMULATION
     static bool _init = false;
     if (_init == false) {
+#if defined(ESP_PLATFORM)
+        const tusb_rhport_init_t rh_init = {
+            .role = TUSB_ROLE_DEVICE,
+            .speed = TUSB_SPEED_AUTO,
+        };
+
+        tusb_init(BOARD_TUD_RHPORT, &rh_init);
+#else
         tud_init(BOARD_TUD_RHPORT);
+#endif
         _init = true;
     }
 #endif
