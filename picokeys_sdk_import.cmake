@@ -61,6 +61,34 @@ if(ESP_PLATFORM)
     if(DEFINED CONFIG_TINYUSB_DESC_CUSTOM_PID)
         set(USB_PID CONFIG_TINYUSB_DESC_CUSTOM_PID)
     endif()
+    if(NOT DEFINED ENABLE_POWER_ON_RESET)
+        set(ENABLE_POWER_ON_RESET 0)
+    endif()
+    if(NOT DEFINED ENABLE_PQC)
+        set(ENABLE_PQC 0)
+    endif()
+    if(NOT DEFINED SDKCONFIG_DEFAULTS AND NOT DEFINED ENV{SDKCONFIG_DEFAULTS})
+        set(SDKCONFIG_DEFAULTS "pico-keys-sdk/config/esp32/sdkconfig.defaults")
+    endif()
+    set(EXTRA_COMPONENT_DIRS
+        src/${PICOKEYS_COMPONENTS}
+        pico-keys-sdk/config/esp32/components/mbedtls
+        pico-keys-sdk/config/esp32/components/pico-keys-sdk
+    )
+    set(COMPONENTS ${PICOKEYS_COMPONENTS} pico-keys-sdk)
+    if (USB_ITF_HID)
+        list(APPEND EXTRA_COMPONENT_DIRS
+            pico-keys-sdk/config/esp32/components/tinycbor
+        )
+        list(APPEND COMPONENTS tinycbor)
+    endif()
+    if(ENABLE_PQC)
+        list(APPEND EXTRA_COMPONENT_DIRS
+            pico-keys-sdk/config/esp32/components/mlkem512
+            pico-keys-sdk/config/esp32/components/mlkem768
+            pico-keys-sdk/config/esp32/components/mlkem1024
+        )
+    endif()
 endif()
 
 if(NOT DEFINED USB_VID)
@@ -81,7 +109,6 @@ if(NOT DEFINED ENABLE_EMULATION)
 endif()
 if(ESP_PLATFORM AND COMMAND idf_build_set_property)
     idf_build_set_property(USB_ITF_HID "${USB_ITF_HID}")
-    idf_build_set_property(COMPILE_DEFINITIONS "MBEDTLS_USER_CONFIG_FILE=\"${CMAKE_CURRENT_LIST_DIR}/config/esp32/mbedtls_user_config.h\"" APPEND)
 endif()
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/openssl.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/build_helpers.cmake)
@@ -112,12 +139,18 @@ if(USB_ITF_LWIP)
     add_compile_definitions(USB_ITF_LWIP=1)
     message(STATUS "USB LWIP Interface:\t\t enabled")
 endif()
-add_compile_definitions(DEBUG_APDU=${DEBUG_APDU})
-if(NOT ESP_PLATFORM)
-    add_compile_definitions(MBEDTLS_CONFIG_FILE="${CMAKE_CURRENT_LIST_DIR}/config/mbedtls_config.h")
-else()
+if(ESP_PLATFORM)
+    add_compile_definitions(MBEDTLS_AES_ALT=1)
+    add_compile_definitions(MBEDTLS_GCM_ALT=1)
+    add_compile_definitions(MBEDTLS_SHA256_ALT=1)
+    add_compile_definitions(MBEDTLS_SHA1_ALT=1)
+    add_compile_definitions(MBEDTLS_SHA512_ALT=1)
+    add_compile_definitions(MBEDTLS_MPI_EXP_MOD_ALT=1)
+    add_compile_definitions(MBEDTLS_MPI_MUL_MPI_ALT=1)
     add_compile_definitions(CFG_TUSB_CONFIG_FILE="${CMAKE_CURRENT_LIST_DIR}/src/usb/tusb_config.h")
 endif()
+add_compile_definitions(DEBUG_APDU=${DEBUG_APDU})
+add_compile_definitions(MBEDTLS_CONFIG_FILE="${CMAKE_CURRENT_LIST_DIR}/config/mbedtls_config.h")
 
 message(STATUS "USB VID/PID:\t\t\t ${USB_VID}:${USB_PID}")
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/deps.cmake)
@@ -399,14 +432,12 @@ if(USB_ITF_LWIP)
 endif()
 
 if(USB_ITF_LWIP)
-    if (NOT ESP_PLATFORM)
-        add_compile_definitions(
-            MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
-            MBEDTLS_SSL_PROTO_TLS1_2
-            MBEDTLS_SSL_SRV_C
-            MBEDTLS_SSL_TLS_C
-        )
-    endif()
+    add_compile_definitions(
+        MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
+        MBEDTLS_SSL_PROTO_TLS1_2
+        MBEDTLS_SSL_SRV_C
+        MBEDTLS_SSL_TLS_C
+    )
     list(APPEND MBEDTLS_SOURCES
         ${CMAKE_CURRENT_LIST_DIR}/third-party/mbedtls/library/pkparse.c
         ${CMAKE_CURRENT_LIST_DIR}/third-party/mbedtls/library/pk_ecc.c

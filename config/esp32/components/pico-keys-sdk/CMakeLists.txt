@@ -7,6 +7,7 @@ set(PICOKEYS_INCLUDE_DIRS
     ${PICOKEYS_SDK_DIR}/src/rng
     ${PICOKEYS_SDK_DIR}/src/usb
     ${PICOKEYS_SDK_DIR}/src/led
+    ${PICOKEYS_SDK_DIR}/third-party/mbedtls/include
 )
 
 set(PICOKEYS_REQUIRES

@@ -477,7 +477,9 @@
  *
  * Uncomment to use your own hardware entropy collector.
  */
-//#define MBEDTLS_ENTROPY_HARDWARE_ALT
+#ifdef ESP_PLATFORM
+#define MBEDTLS_ENTROPY_HARDWARE_ALT
+#endif
 
 /**
  * \def MBEDTLS_AES_ROM_TABLES

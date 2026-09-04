@@ -97,24 +97,22 @@ function(picokeys_sync_dep name repo ref dest)
     endif()
 endfunction()
 
-if(NOT ESP_PLATFORM)
-    if(ENABLE_EDDSA)
-        set(MBEDTLS_ORIGIN "${PICOKEYS_MBEDTLS_EDDSA_REPO}")
-        set(MBEDTLS_REF "${PICOKEYS_MBEDTLS_EDDSA_REF}")
+if(ENABLE_EDDSA)
+    set(MBEDTLS_ORIGIN "${PICOKEYS_MBEDTLS_EDDSA_REPO}")
+    set(MBEDTLS_REF "${PICOKEYS_MBEDTLS_EDDSA_REF}")
 
-        add_compile_definitions(
-            MBEDTLS_ECP_DP_ED25519_ENABLED=1
-            MBEDTLS_ECP_DP_ED448_ENABLED=1
-            MBEDTLS_EDDSA_C=1
-            MBEDTLS_SHA3_C=1
-        )
-    else()
-        set(MBEDTLS_ORIGIN "${PICOKEYS_MBEDTLS_STD_REPO}")
-        set(MBEDTLS_REF "${PICOKEYS_MBEDTLS_STD_REF}")
-    endif()
-
-    picokeys_sync_dep(mbedtls_dep "${MBEDTLS_ORIGIN}" "${MBEDTLS_REF}" "${MBEDTLS_PATH}")
+    add_compile_definitions(
+        MBEDTLS_ECP_DP_ED25519_ENABLED=1
+        MBEDTLS_ECP_DP_ED448_ENABLED=1
+        MBEDTLS_EDDSA_C=1
+        MBEDTLS_SHA3_C=1
+    )
+else()
+    set(MBEDTLS_ORIGIN "${PICOKEYS_MBEDTLS_STD_REPO}")
+    set(MBEDTLS_REF "${PICOKEYS_MBEDTLS_STD_REF}")
 endif()
+
+picokeys_sync_dep(mbedtls_dep "${MBEDTLS_ORIGIN}" "${MBEDTLS_REF}" "${MBEDTLS_PATH}")
 
 if(USB_ITF_HID)
     picokeys_sync_dep(tinycbor_dep "${PICOKEYS_TINYCBOR_REPO}" "${PICOKEYS_TINYCBOR_REF}" "${TINYCBOR_PATH}")
