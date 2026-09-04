@@ -98,7 +98,7 @@ endif()
 
 idf_component_register(
     SRCS ${MBEDTLS_SOURCES} ${PICO_KEYS_MBEDTLS_PORT_SOURCES}
-    INCLUDE_DIRS ${CMAKE_CURRENT_LIST_DIR}/include ${PICO_KEYS_MBEDTLS_PORT_INCLUDE_DIRS} ${PICO_KEYS_MBEDTLS_DIR}/include
+    INCLUDE_DIRS ${PICO_KEYS_MBEDTLS_PORT_INCLUDE_DIRS} ${PICO_KEYS_MBEDTLS_DIR}/include
     PRIV_REQUIRES soc esp_hw_support esp_pm esp_security esp_mm
     KCONFIG "$ENV{IDF_PATH}/components/mbedtls/Kconfig"
 )
