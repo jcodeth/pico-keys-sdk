@@ -106,6 +106,9 @@ void low_flash_commit(void);
 bool low_flash_commit_sync(uint32_t timeout_ms);
 
 void low_flash_task(void){
+#ifdef ESP_PLATFORM
+    bool flash_updated = false;
+#endif
     if (mutex_try_enter(&mtx_flash, NULL) == true) {
         if (locked_out == true && flash_available == true && ready_pages > 0) {
             //printf(" DO_FLASH AVAILABLE\n");
@@ -122,6 +125,9 @@ void low_flash_task(void){
                     flash_range_erase(flash_pages[r].address - XIP_BASE, FLASH_SECTOR_SIZE);
                     flash_range_program(flash_pages[r].address - XIP_BASE, flash_pages[r].page, FLASH_SECTOR_SIZE);
                     restore_interrupts(ints);
+#ifdef ESP_PLATFORM
+                    flash_updated = true;
+#endif
                     if (multicore_lockout_end_timeout_us(1000) == false) {
                         printf("WARN: FLASH LOCKOUT END TIMEOUT\n");
                         continue;
@@ -143,6 +149,9 @@ void low_flash_task(void){
                     uint32_t ints = save_and_disable_interrupts();
                     flash_range_erase(flash_pages[r].address - XIP_BASE, flash_pages[r].page_size ? ((int) (flash_pages[r].page_size / FLASH_SECTOR_SIZE)) * FLASH_SECTOR_SIZE : FLASH_SECTOR_SIZE);
                     restore_interrupts(ints);
+#ifdef ESP_PLATFORM
+                    flash_updated = true;
+#endif
                     if (multicore_lockout_end_timeout_us(1000) == false) {
                         printf("WARN: FLASH LOCKOUT END TIMEOUT\n");
                         continue;
@@ -165,8 +174,11 @@ void low_flash_task(void){
             flash_available = false;
         }
 #ifdef ESP_PLATFORM
-        esp_partition_munmap(fd_map);
-        esp_partition_mmap(part0, 0, part0->size, ESP_PARTITION_MMAP_DATA, (const void **)&map, (esp_partition_mmap_handle_t *)&fd_map);
+        if (flash_updated && multicore_lockout_start_timeout_us(1000)) {
+            esp_partition_munmap(fd_map);
+            esp_partition_mmap(part0, 0, part0->size, ESP_PARTITION_MMAP_DATA, (const void **)&map, (esp_partition_mmap_handle_t *)&fd_map);
+            multicore_lockout_end_timeout_us(1000);
+        }
 #endif
         mutex_exit(&mtx_flash);
     }
