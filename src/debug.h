@@ -18,6 +18,16 @@
 #ifndef _DEBUG_H_
 #define _DEBUG_H_
 
+#ifdef ENABLE_DIAGNOSTICS
+#define DEBUG_LAST_ERROR_FID 0xE0C2
+#define DEBUG_LAST_ERROR_STRING_SIZE 256
+
+extern int debug_log_errstr(const char *file, int line, const char *format, ...);
+#define log_errstr(...) debug_log_errstr(__FILE__, __LINE__, __VA_ARGS__)
+#else
+#define log_errstr(...) ((void)0)
+#endif
+
 #if defined(DEBUG_APDU) && DEBUG_APDU == 1
 #include <inttypes.h>
 #include <stddef.h>

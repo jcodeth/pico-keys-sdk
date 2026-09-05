@@ -95,6 +95,7 @@ static bool vault_enroll_button_accepted;
 
 int picokeys_vault_hash_kvault(const uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE], uint8_t vault_id[PICOKEYS_VAULT_KEY_SIZE]) {
     if (!kvault || !vault_id) {
+        log_errstr("vault ID hash: invalid arguments kvault=%p vault_id=%p", (void *)kvault, (void *)vault_id);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -108,6 +109,7 @@ int picokeys_vault_hash_kvault(const uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE], ui
 
 int picokeys_vault_layer_key(const uint8_t key[PICOKEYS_VAULT_KEY_SIZE], const uint8_t vault_id[PICOKEYS_VAULT_KEY_SIZE], const uint8_t credential_hash[PICOKEYS_VAULT_KEY_SIZE], uint8_t algorithm, uint8_t layer, uint8_t out[PICOKEYS_VAULT_KEY_SIZE]) {
     if (!key || !vault_id || !credential_hash || !out) {
+        log_errstr("vault key derivation: invalid arguments key=%p vault_id=%p credential_hash=%p out=%p algorithm=%u layer=%u", (void *)key, (void *)vault_id, (void *)credential_hash, (void *)out, algorithm, layer);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -118,11 +120,15 @@ int picokeys_vault_layer_key(const uint8_t key[PICOKEYS_VAULT_KEY_SIZE], const u
     info[sizeof(vault_enroll_info) - 1 + PICOKEYS_VAULT_KEY_SIZE + 1] = layer;
     int ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), vault_id, PICOKEYS_VAULT_KEY_SIZE, key, PICOKEYS_VAULT_KEY_SIZE, info, sizeof(info), out, PICOKEYS_VAULT_KEY_SIZE);
     mbedtls_platform_zeroize(info, sizeof(info));
+    if (ret != 0) {
+        log_errstr("vault key derivation: HKDF failed ret=%d algorithm=%u layer=%u", ret, algorithm, layer);
+    }
     return ret == 0 ? PICOKEYS_OK : PICOKEYS_EXEC_ERROR;
 }
 
 int picokeys_vault_encrypt_layer(uint8_t algorithm, const uint8_t key[PICOKEYS_VAULT_KEY_SIZE], const uint8_t nonce[PICOKEYS_VAULT_BLOB_NONCE_SIZE], const uint8_t *aad, size_t aad_len, const uint8_t *input, size_t input_len, uint8_t *output, uint8_t tag[PICOKEYS_VAULT_BLOB_TAG_SIZE]) {
     if (!key || !nonce || (aad_len > 0 && !aad) || (input_len > 0 && (!input || !output)) || !tag) {
+        log_errstr("vault encryption: invalid arguments algorithm=%u key=%p nonce=%p aad=%p aad_len=%zu input=%p input_len=%zu output=%p tag=%p", algorithm, (void *)key, (void *)nonce, (void *)aad, aad_len, (void *)input, input_len, (void *)output, (void *)tag);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -131,8 +137,14 @@ int picokeys_vault_encrypt_layer(uint8_t algorithm, const uint8_t key[PICOKEYS_V
         mbedtls_chachapoly_context chatx;
         mbedtls_chachapoly_init(&chatx);
         ret = mbedtls_chachapoly_setkey(&chatx, key);
+        if (ret != 0) {
+            log_errstr("vault encryption: ChaCha20-Poly1305 setup failed ret=%d", ret);
+        }
         if (ret == 0) {
             ret = mbedtls_chachapoly_encrypt_and_tag(&chatx, input_len, nonce, aad, aad_len, input, output, tag);
+            if (ret != 0) {
+                log_errstr("vault encryption: ChaCha20-Poly1305 failed ret=%d input_len=%zu", ret, input_len);
+            }
         }
         mbedtls_chachapoly_free(&chatx);
     }
@@ -140,16 +152,26 @@ int picokeys_vault_encrypt_layer(uint8_t algorithm, const uint8_t key[PICOKEYS_V
         mbedtls_gcm_context gcm;
         mbedtls_gcm_init(&gcm);
         ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 256);
+        if (ret != 0) {
+            log_errstr("vault encryption: AES-GCM setup failed ret=%d", ret);
+        }
         if (ret == 0) {
             ret = mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, input_len, nonce, PICOKEYS_VAULT_BLOB_NONCE_SIZE, aad, aad_len, input, output, PICOKEYS_VAULT_BLOB_TAG_SIZE, tag);
+            if (ret != 0) {
+                log_errstr("vault encryption: AES-GCM failed ret=%d input_len=%zu", ret, input_len);
+            }
         }
         mbedtls_gcm_free(&gcm);
+    }
+    if (algorithm != PICOKEYS_VAULT_ALGORITHM_CHACHAPOLY && algorithm != PICOKEYS_VAULT_ALGORITHM_AESGCM) {
+        log_errstr("vault encryption: unsupported algorithm=%u", algorithm);
     }
     return ret == 0 ? PICOKEYS_OK : PICOKEYS_EXEC_ERROR;
 }
 
 int picokeys_vault_decrypt_layer(uint8_t algorithm, const uint8_t key[PICOKEYS_VAULT_KEY_SIZE], const uint8_t nonce[PICOKEYS_VAULT_BLOB_NONCE_SIZE], const uint8_t *aad, size_t aad_len, const uint8_t *input, size_t input_len, const uint8_t tag[PICOKEYS_VAULT_BLOB_TAG_SIZE], uint8_t *output) {
     if (!key || !nonce || (aad_len > 0 && !aad) || (input_len > 0 && (!input || !output)) || !tag) {
+        log_errstr("vault decryption: invalid arguments algorithm=%u key=%p nonce=%p aad=%p aad_len=%zu input=%p input_len=%zu tag=%p output=%p", algorithm, (void *)key, (void *)nonce, (void *)aad, aad_len, (void *)input, input_len, (void *)tag, (void *)output);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -158,8 +180,14 @@ int picokeys_vault_decrypt_layer(uint8_t algorithm, const uint8_t key[PICOKEYS_V
         mbedtls_chachapoly_context chatx;
         mbedtls_chachapoly_init(&chatx);
         ret = mbedtls_chachapoly_setkey(&chatx, key);
+        if (ret != 0) {
+            log_errstr("vault decryption: ChaCha20-Poly1305 setup failed ret=%d", ret);
+        }
         if (ret == 0) {
             ret = mbedtls_chachapoly_auth_decrypt(&chatx, input_len, nonce, aad, aad_len, tag, input, output);
+            if (ret != 0) {
+                log_errstr("vault decryption: ChaCha20-Poly1305 authentication failed ret=%d input_len=%zu", ret, input_len);
+            }
         }
         mbedtls_chachapoly_free(&chatx);
     }
@@ -167,16 +195,26 @@ int picokeys_vault_decrypt_layer(uint8_t algorithm, const uint8_t key[PICOKEYS_V
         mbedtls_gcm_context gcm;
         mbedtls_gcm_init(&gcm);
         ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 256);
+        if (ret != 0) {
+            log_errstr("vault decryption: AES-GCM setup failed ret=%d", ret);
+        }
         if (ret == 0) {
             ret = mbedtls_gcm_auth_decrypt(&gcm, input_len, nonce, PICOKEYS_VAULT_BLOB_NONCE_SIZE, aad, aad_len, tag, PICOKEYS_VAULT_BLOB_TAG_SIZE, input, output);
+            if (ret != 0) {
+                log_errstr("vault decryption: AES-GCM authentication failed ret=%d input_len=%zu", ret, input_len);
+            }
         }
         mbedtls_gcm_free(&gcm);
+    }
+    if (algorithm != PICOKEYS_VAULT_ALGORITHM_CHACHAPOLY && algorithm != PICOKEYS_VAULT_ALGORITHM_AESGCM) {
+        log_errstr("vault decryption: unsupported algorithm=%u", algorithm);
     }
     return ret == 0 ? PICOKEYS_OK : PICOKEYS_VERIFICATION_FAILED;
 }
 
 static int vault_x448_generate(uint8_t private_key[PICOKEYS_VAULT_X448_BYTES], uint8_t public_key[PICOKEYS_VAULT_X448_BYTES]) {
     if (!private_key || !public_key) {
+        log_errstr("vault enrollment: X448 generate invalid arguments private_key=%p public_key=%p", (void *)private_key, (void *)public_key);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -193,13 +231,19 @@ static int vault_x448_generate(uint8_t private_key[PICOKEYS_VAULT_X448_BYTES], u
     }
     mbedtls_ecp_keypair_free(&key);
     if (ret != 0) {
+        log_errstr("vault enrollment: X448 key generation failed: %d", ret);
         return PICOKEYS_EXEC_ERROR;
     }
-    return private_len == PICOKEYS_VAULT_X448_BYTES && public_len == PICOKEYS_VAULT_X448_BYTES ? PICOKEYS_OK : PICOKEYS_WRONG_LENGTH;
+    if (private_len != PICOKEYS_VAULT_X448_BYTES || public_len != PICOKEYS_VAULT_X448_BYTES) {
+        log_errstr("vault enrollment: X448 key length invalid private_len=%zu public_len=%zu expected=%u", private_len, public_len, PICOKEYS_VAULT_X448_BYTES);
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    return PICOKEYS_OK;
 }
 
 static int vault_x448_shared(const uint8_t private_key[PICOKEYS_VAULT_X448_BYTES], const uint8_t peer_public[PICOKEYS_VAULT_X448_BYTES], uint8_t shared[PICOKEYS_VAULT_X448_BYTES]) {
     if (!private_key || !peer_public || !shared) {
+        log_errstr("vault enrollment: X448 shared invalid arguments private_key=%p peer_public=%p shared=%p", (void *)private_key, (void *)peer_public, (void *)shared);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -236,9 +280,14 @@ static int vault_x448_shared(const uint8_t private_key[PICOKEYS_VAULT_X448_BYTES
     mbedtls_ecp_keypair_free(&ours);
     mbedtls_ecp_keypair_free(&theirs);
     if (ret != 0) {
+        log_errstr("vault enrollment: X448 shared secret failed: %d", ret);
         return PICOKEYS_EXEC_ERROR;
     }
-    return shared_len == PICOKEYS_VAULT_X448_BYTES ? PICOKEYS_OK : PICOKEYS_WRONG_LENGTH;
+    if (shared_len != PICOKEYS_VAULT_X448_BYTES) {
+        log_errstr("vault enrollment: X448 shared secret length invalid actual=%zu expected=%u", shared_len, PICOKEYS_VAULT_X448_BYTES);
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    return PICOKEYS_OK;
 }
 
 static bool picokeys_vault_enrollment_active(void) {
@@ -274,6 +323,7 @@ bool picokeys_vault_enrollment_button_ready(void) {
 
 int picokeys_vault_enrollment_start(uint8_t public_key[PICOKEYS_VAULT_X448_BYTES], uint8_t challenge[PICOKEYS_VAULT_ENROLL_CHALLENGE_BYTES]) {
     if (!public_key || !challenge) {
+        log_errstr("vault enrollment: ceremony start invalid arguments public_key=%p challenge=%p", (void *)public_key, (void *)challenge);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -309,6 +359,7 @@ void picokeys_vault_enrollment_reset(void) {
 
 static int vault_enrollment_validate_certificate(mbedtls_x509_crt *certificate) {
     if (!certificate) {
+        log_errstr("vault enrollment: certificate validation invalid certificate=%p", (void *)certificate);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
@@ -320,11 +371,15 @@ static int vault_enrollment_validate_certificate(mbedtls_x509_crt *certificate) 
         ret = mbedtls_x509_crt_verify(certificate, &ca, NULL, NULL, &flags, NULL, NULL);
     }
     mbedtls_x509_crt_free(&ca);
+    if (ret != 0 || flags != 0) {
+        log_errstr("vault enrollment: certificate validation failed ret=%d flags=0x%08lx", ret, (unsigned long)flags);
+    }
     return ret != 0 ? PICOKEYS_EXEC_ERROR : (flags == 0 ? PICOKEYS_OK : PICOKEYS_VERIFICATION_FAILED);
 }
 
 static int vault_enrollment_validate_serial(mbedtls_x509_crt *certificate) {
     if (!certificate || !certificate->subject_alt_names.next) {
+        log_errstr("vault enrollment: certificate serial missing certificate=%p has_san=%d", (void *)certificate, certificate ? certificate->subject_alt_names.next != NULL : 0);
         return PICOKEYS_VERIFICATION_FAILED;
     }
 
@@ -341,27 +396,34 @@ static int vault_enrollment_validate_serial(mbedtls_x509_crt *certificate) {
         }
         mbedtls_x509_free_subject_alt_name(&san);
     }
+    log_errstr("vault enrollment: certificate serial mismatch expected=\"%.*s\" expected_len=%zu", (int)(serial_len > 32u ? 32u : serial_len), pico_serial_str, serial_len);
     return PICOKEYS_VERIFICATION_FAILED;
 #endif
 }
 
 static int vault_enrollment_certificate_public(mbedtls_x509_crt *certificate, uint8_t public_key[PICOKEYS_VAULT_X448_BYTES]) {
     if (!certificate || !public_key || (mbedtls_pk_get_type(&certificate->pk) != MBEDTLS_PK_ECKEY && mbedtls_pk_get_type(&certificate->pk) != MBEDTLS_PK_ECKEY_DH)) {
+        log_errstr("vault enrollment: certificate public key invalid certificate=%p public_key=%p type=%d", (void *)certificate, (void *)public_key, certificate ? mbedtls_pk_get_type(&certificate->pk) : MBEDTLS_PK_NONE);
         return PICOKEYS_WRONG_DATA;
     }
 
     mbedtls_ecp_keypair *key = mbedtls_pk_ec(certificate->pk);
     if (!key || key->MBEDTLS_PRIVATE(grp).id != MBEDTLS_ECP_DP_CURVE448) {
+        log_errstr("vault enrollment: certificate public key curve invalid key=%p curve=%d expected=%d", (void *)key, key ? key->MBEDTLS_PRIVATE(grp).id : MBEDTLS_ECP_DP_NONE, MBEDTLS_ECP_DP_CURVE448);
         return PICOKEYS_WRONG_DATA;
     }
 
     size_t public_len = 0;
     int ret = mbedtls_ecp_point_write_binary(&key->MBEDTLS_PRIVATE(grp), &key->MBEDTLS_PRIVATE(Q), MBEDTLS_ECP_PF_UNCOMPRESSED, &public_len, public_key, PICOKEYS_VAULT_X448_BYTES);
+    if (ret != 0 || public_len != PICOKEYS_VAULT_X448_BYTES) {
+        log_errstr("vault enrollment: certificate public key extraction failed ret=%d public_len=%zu expected=%u", ret, public_len, PICOKEYS_VAULT_X448_BYTES);
+    }
     return ret == 0 && public_len == PICOKEYS_VAULT_X448_BYTES ? PICOKEYS_OK : PICOKEYS_WRONG_DATA;
 }
 
 int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE], uint8_t *metadata, size_t metadata_capacity, size_t *metadata_len) {
     if (!picokeys_vault_enrollment_active() || !packet || !kvault || !metadata_len || (metadata_capacity > 0 && !metadata) || packet_len < PICOKEYS_VAULT_ENROLL_MIN_PACKET_LEN) {
+        log_errstr("vault enrollment: invalid or inactive packet active=%d packet=%p packet_len=%zu kvault=%p metadata=%p metadata_capacity=%zu metadata_len=%p", picokeys_vault_enrollment_active(), (void *)packet, packet_len, (void *)kvault, (void *)metadata, metadata_capacity, (void *)metadata_len);
         picokeys_vault_enrollment_reset();
         return PICOKEYS_WRONG_LENGTH;
     }
@@ -371,12 +433,14 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
     size_t certificate_offset = 2;
     size_t encrypted_offset = certificate_offset + certificate_len;
     if (certificate_len == 0 || certificate_len > PICOKEYS_VAULT_ENROLL_CERT_MAX || encrypted_offset > packet_len || packet_len < encrypted_offset + 12u + 16u + PICOKEYS_VAULT_KEY_SIZE) {
+        log_errstr("vault enrollment: invalid certificate length=%u packet_len=%zu encrypted_offset=%zu", certificate_len, packet_len, encrypted_offset);
         picokeys_vault_enrollment_reset();
         return PICOKEYS_WRONG_LENGTH;
     }
 
     size_t encrypted_len = packet_len - encrypted_offset - 12u;
     if (encrypted_len < PICOKEYS_VAULT_KEY_SIZE + 16u || encrypted_len > PICOKEYS_VAULT_ENROLL_PLAIN_MAX + 16u) {
+        log_errstr("vault enrollment: invalid encrypted payload length=%zu min=%u max=%u", encrypted_len, PICOKEYS_VAULT_KEY_SIZE + 16u, PICOKEYS_VAULT_ENROLL_PLAIN_MAX + 16u);
         picokeys_vault_enrollment_reset();
         return PICOKEYS_WRONG_LENGTH;
     }
@@ -384,6 +448,9 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
     mbedtls_x509_crt certificate;
     mbedtls_x509_crt_init(&certificate);
     int ret = mbedtls_x509_crt_parse(&certificate, packet + certificate_offset, certificate_len);
+    if (ret != 0) {
+        log_errstr("vault enrollment: certificate parsing failed: %d", ret);
+    }
     if (ret == 0) {
         ret = vault_enrollment_validate_certificate(&certificate);
     }
@@ -413,6 +480,9 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
     ret = vault_x448_shared(vault_enroll_private, certificate_public, shared);
     if (ret == PICOKEYS_OK) {
         ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), NULL, 0, shared, sizeof(shared), info, sizeof(info), session_key, sizeof(session_key));
+        if (ret != 0) {
+            log_errstr("vault enrollment: session key derivation failed: %d", ret);
+        }
     }
 
     uint8_t enrollment_plain[PICOKEYS_VAULT_ENROLL_PLAIN_MAX] = { 0 };
@@ -423,8 +493,14 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
         mbedtls_gcm_context gcm;
         mbedtls_gcm_init(&gcm);
         ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, session_key, 256);
+        if (ret != 0) {
+            log_errstr("vault enrollment: payload cipher setup failed: %d", ret);
+        }
         if (ret == 0) {
             ret = mbedtls_gcm_auth_decrypt(&gcm, plain_len, packet + encrypted_offset, 12u, info, sizeof(info), enrollment_tag, 16u, enrollment_cipher, enrollment_plain);
+            if (ret != 0) {
+                log_errstr("vault enrollment: payload authentication failed: %d", ret);
+            }
         }
         mbedtls_gcm_free(&gcm);
     }
@@ -438,6 +514,7 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
         plain_metadata_len = enrollment_plain[PICOKEYS_VAULT_KEY_SIZE];
         if (plain_metadata_len > metadata_capacity) {
             ret = PICOKEYS_ERR_NO_MEMORY;
+            log_errstr("vault enrollment: metadata buffer too small len=%zu capacity=%zu", plain_metadata_len, metadata_capacity);
         }
         else if (plain_metadata_len > 0 && metadata) {
             memcpy(metadata, enrollment_plain + PICOKEYS_VAULT_KEY_SIZE + 1u, plain_metadata_len);
@@ -445,6 +522,7 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
     }
     else if (ret == 0) {
         ret = PICOKEYS_WRONG_LENGTH;
+        log_errstr("vault enrollment: decrypted payload format invalid plain_len=%zu metadata_len=%u", plain_len, plain_len > PICOKEYS_VAULT_KEY_SIZE ? enrollment_plain[PICOKEYS_VAULT_KEY_SIZE] : 0u);
     }
 
     if (ret == PICOKEYS_OK) {

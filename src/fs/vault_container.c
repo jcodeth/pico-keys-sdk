@@ -37,22 +37,33 @@ static const uint8_t *vault_legacy_record(const file_t *file) {
 
 static int vault_wrap(const uint8_t wrapping_key[PICOKEYS_VAULT_KEY_SIZE], const uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE], uint8_t record[PICOKEYS_VAULT_RECORD_SIZE]) {
     if (!wrapping_key || !kvault || !record) {
+        log_errstr("vault container wrap: invalid arguments wrapping_key=%p kvault=%p record=%p", (void *)wrapping_key, (void *)kvault, (void *)record);
         return PICOKEYS_ERR_NULL_PARAM;
     }
 
     record[0] = PICOKEYS_VAULT_RECORD_FORMAT;
-    return encrypt_with_aad(wrapping_key, CONST_BYTE_ARRAY(kvault, PICOKEYS_VAULT_KEY_SIZE), PICOKEYS_VAULT_RECORD_FORMAT, record + 1);
+    int ret = encrypt_with_aad(wrapping_key, CONST_BYTE_ARRAY(kvault, PICOKEYS_VAULT_KEY_SIZE), PICOKEYS_VAULT_RECORD_FORMAT, record + 1);
+    if (ret != PICOKEYS_OK) {
+        log_errstr("vault container wrap: encryption failed ret=%d", ret);
+    }
+    return ret;
 }
 
 static int vault_unwrap(const uint8_t wrapping_key[PICOKEYS_VAULT_KEY_SIZE], const uint8_t record[PICOKEYS_VAULT_RECORD_SIZE], uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE]) {
     if (!wrapping_key || !record || !kvault) {
+        log_errstr("vault container unwrap: invalid arguments wrapping_key=%p record=%p kvault=%p", (void *)wrapping_key, (void *)record, (void *)kvault);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     if (record[0] != PICOKEYS_VAULT_RECORD_FORMAT) {
+        log_errstr("vault container unwrap: invalid record format actual=%u expected=%u", record[0], PICOKEYS_VAULT_RECORD_FORMAT);
         return PICOKEYS_WRONG_DATA;
     }
 
-    return decrypt_with_aad(wrapping_key, CONST_BYTE_ARRAY(record + 1, PICOKEYS_VAULT_RECORD_SIZE - 1), PICOKEYS_VAULT_RECORD_FORMAT, kvault);
+    int ret = decrypt_with_aad(wrapping_key, CONST_BYTE_ARRAY(record + 1, PICOKEYS_VAULT_RECORD_SIZE - 1), PICOKEYS_VAULT_RECORD_FORMAT, kvault);
+    if (ret != PICOKEYS_OK) {
+        log_errstr("vault container unwrap: decryption failed ret=%d", ret);
+    }
+    return ret;
 }
 
 static int vault_clear_legacy_record(file_t *file) {
@@ -64,7 +75,15 @@ static int vault_clear_legacy_record(file_t *file) {
         return PICOKEYS_OK;
     }
 
-    return vault_legacy_record(file) ? flash_clear_file(file) : PICOKEYS_WRONG_DATA;
+    if (!vault_legacy_record(file)) {
+        log_errstr("vault legacy cleanup: invalid record file=%p size=%zu", (void *)file, file_get_size(file));
+        return PICOKEYS_WRONG_DATA;
+    }
+    int ret = flash_clear_file(file);
+    if (ret != PICOKEYS_OK) {
+        log_errstr("vault legacy cleanup: file clear failed ret=%d", ret);
+    }
+    return ret;
 }
 
 /* The object layout is shared by all applications using the SDK vault. */
@@ -255,6 +274,7 @@ static const file_object_container_layout_t vault_layout = {
 
 int picokeys_vault_init(const file_object_container_crypto_t *primary, const file_object_container_crypto_t *legacy, file_t *legacy_file, file_t *legacy_label_file) {
     if (!primary || !primary->auth || !primary->protector) {
+        log_errstr("vault container init: invalid primary crypto primary=%p auth=%p protector=%p", (void *)primary, primary ? (void *)primary->auth : NULL, primary ? (void *)primary->protector : NULL);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     vault_state.layout = &vault_layout;
@@ -269,9 +289,14 @@ int picokeys_vault_init(const file_object_container_crypto_t *primary, const fil
 
 static int vault_update(const file_object_container_write_t *writes, size_t write_count) {
     if (!vault_state_valid() || !writes || write_count == 0) {
+        log_errstr("vault container update: invalid arguments initialized=%d writes=%p write_count=%zu", vault_state_valid(), (void *)writes, write_count);
         return PICOKEYS_ERR_NULL_PARAM;
     }
-    return file_object_container_update_without_record_validation(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, writes, write_count, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL);
+    int ret = file_object_container_update_without_record_validation(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, writes, write_count, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL);
+    if (ret != PICOKEYS_OK) {
+        log_errstr("vault container update: object update failed ret=%d write_count=%zu", ret, write_count);
+    }
+    return ret;
 }
 
 bool picokeys_vault_wrap_available(uint8_t app_id) {
@@ -281,11 +306,19 @@ bool picokeys_vault_wrap_available(uint8_t app_id) {
 
 static int vault_get_wrap_record(uint8_t app_id, uint8_t record[PICOKEYS_VAULT_RECORD_SIZE]) {
     if (!vault_state_valid() || !record) {
+        log_errstr("vault container read wrap: invalid arguments initialized=%d record=%p app_id=%u", vault_state_valid(), (void *)record, app_id);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     byte_buffer_t output = BYTE_BUFFER(record, PICOKEYS_VAULT_RECORD_SIZE);
     int ret = file_object_container_read(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, PICOKEYS_VAULT_OBJECT_WRAP, app_id, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL, NULL, NULL, &output);
-    return ret == PICOKEYS_OK && output.len == PICOKEYS_VAULT_RECORD_SIZE ? PICOKEYS_OK : (ret == PICOKEYS_OK ? PICOKEYS_WRONG_LENGTH : ret);
+    if (ret == PICOKEYS_OK && output.len != PICOKEYS_VAULT_RECORD_SIZE) {
+        log_errstr("vault container read wrap: invalid record length actual=%zu expected=%u app_id=%u", output.len, PICOKEYS_VAULT_RECORD_SIZE, app_id);
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    if (ret != PICOKEYS_OK && ret != PICOKEYS_ERR_FILE_NOT_FOUND) {
+        log_errstr("vault container read wrap: object read failed ret=%d app_id=%u", ret, app_id);
+    }
+    return ret;
 }
 
 static int vault_set_wrap_record(const uint8_t record[PICOKEYS_VAULT_RECORD_SIZE], uint8_t app_id) {
@@ -308,6 +341,7 @@ static int vault_migrate_legacy(void);
 
 int picokeys_vault_set_kvault(const uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE], const uint8_t encryption_key[PICOKEYS_VAULT_KEY_SIZE], uint8_t app_id) {
     if (!kvault || !encryption_key) {
+        log_errstr("vault container set key: invalid arguments kvault=%p encryption_key=%p app_id=%u", (void *)kvault, (void *)encryption_key, app_id);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     uint8_t record[PICOKEYS_VAULT_RECORD_SIZE] = { 0 };
@@ -321,6 +355,7 @@ int picokeys_vault_set_kvault(const uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE], con
 
 int picokeys_vault_get_kvault(uint8_t app_id, const uint8_t encryption_key[PICOKEYS_VAULT_KEY_SIZE], uint8_t kvault[PICOKEYS_VAULT_KEY_SIZE]) {
     if (!encryption_key || !kvault) {
+        log_errstr("vault container get key: invalid arguments encryption_key=%p kvault=%p app_id=%u", (void *)encryption_key, (void *)kvault, app_id);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     uint8_t record[PICOKEYS_VAULT_RECORD_SIZE] = { 0 };
@@ -334,20 +369,28 @@ int picokeys_vault_get_kvault(uint8_t app_id, const uint8_t encryption_key[PICOK
     if (ret == PICOKEYS_OK) {
         ret = vault_unwrap(encryption_key, record, kvault);
     }
+    if (ret == PICOKEYS_ERR_FILE_NOT_FOUND) {
+        log_errstr("vault container get key: record unavailable app_id=%u", app_id);
+    }
     mbedtls_platform_zeroize(record, sizeof(record));
     return ret;
 }
 
 int picokeys_vault_get_label(byte_buffer_t *label) {
     if (!vault_state_valid() || !label || label->len > label->capacity || (!label->data && label->capacity > 0)) {
+        log_errstr("vault container get label: invalid arguments initialized=%d label=%p", vault_state_valid(), (void *)label);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     int ret = file_object_container_read(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, PICOKEYS_VAULT_OBJECT_LABEL, 0, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL, NULL, NULL, label);
+    if (ret != PICOKEYS_OK && ret != PICOKEYS_ERR_FILE_NOT_FOUND) {
+        log_errstr("vault container get label: object read failed ret=%d capacity=%zu", ret, label->capacity);
+    }
     return ret == PICOKEYS_ERR_FILE_NOT_FOUND ? PICOKEYS_OK : ret;
 }
 
 int picokeys_vault_set_label(const_byte_array_t label) {
     if (label.len > PICOKEYS_VAULT_LABEL_MAX || (!label.data && label.len > 0)) {
+        log_errstr("vault container set label: invalid arguments data=%p length=%zu max=%u", (void *)label.data, label.len, PICOKEYS_VAULT_LABEL_MAX);
         return label.len > PICOKEYS_VAULT_LABEL_MAX ? PICOKEYS_WRONG_LENGTH : PICOKEYS_ERR_NULL_PARAM;
     }
     const file_object_container_write_t write = {
@@ -372,16 +415,21 @@ static int vault_clear_file(file_t *file) {
 
 static int vault_migrate_legacy(void) {
     if (!vault_state_valid() || !vault_state.legacy_file) {
+        log_errstr("vault legacy migration: invalid state initialized=%d legacy_file=%p", vault_state_valid(), (void *)vault_state.legacy_file);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     uint8_t record[PICOKEYS_VAULT_RECORD_SIZE] = { 0 };
     int ret = vault_get_wrap_record(0, record);
     if (ret != PICOKEYS_ERR_FILE_NOT_FOUND) {
+        if (ret != PICOKEYS_OK) {
+            log_errstr("vault legacy migration: new container read failed ret=%d", ret);
+        }
         mbedtls_platform_zeroize(record, sizeof(record));
         return ret;
     }
     const uint8_t *legacy_record = vault_legacy_record(vault_state.legacy_file);
     if (!legacy_record) {
+        log_errstr("vault legacy migration: legacy record unavailable file=%p", (void *)vault_state.legacy_file);
         mbedtls_platform_zeroize(record, sizeof(record));
         return PICOKEYS_ERR_FILE_NOT_FOUND;
     }
@@ -392,6 +440,7 @@ static int vault_migrate_legacy(void) {
     if (vault_state.legacy_label_file && file_has_data(vault_state.legacy_label_file)) {
         label_len = file_get_size(vault_state.legacy_label_file);
         if (label_len > PICOKEYS_VAULT_LABEL_MAX || label_len > sizeof(label)) {
+            log_errstr("vault legacy migration: label too long length=%zu max=%u", label_len, PICOKEYS_VAULT_LABEL_MAX);
             mbedtls_platform_zeroize(label, sizeof(label));
             mbedtls_platform_zeroize(record, sizeof(record));
             return PICOKEYS_WRONG_LENGTH;
@@ -423,6 +472,10 @@ static int vault_migrate_legacy(void) {
         ret = vault_clear_file(vault_state.legacy_label_file);
         if (ret == PICOKEYS_OK && !flash_commit_sync(PICOKEYS_VAULT_COMMIT_TIMEOUT_MS)) {
             ret = PICOKEYS_ERR_MEMORY_FATAL;
+            log_errstr("vault legacy migration: label commit failed timeout_ms=%u", PICOKEYS_VAULT_COMMIT_TIMEOUT_MS);
+        }
+        else if (ret != PICOKEYS_OK) {
+            log_errstr("vault legacy migration: label cleanup failed ret=%d", ret);
         }
     }
     mbedtls_platform_zeroize(label, sizeof(label));
@@ -432,6 +485,7 @@ static int vault_migrate_legacy(void) {
 
 int picokeys_vault_delete_kvault(uint8_t app_id) {
     if (!vault_state_valid()) {
+        log_errstr("vault container delete: invalid state initialized=%d app_id=%u", vault_state_valid(), app_id);
         return PICOKEYS_ERR_NULL_PARAM;
     }
     file_object_container_state_t state;
@@ -447,11 +501,16 @@ int picokeys_vault_delete_kvault(uint8_t app_id) {
             ret = vault_clear_file(vault_state.legacy_label_file);
             if (ret == PICOKEYS_OK && !flash_commit_sync(PICOKEYS_VAULT_COMMIT_TIMEOUT_MS)) {
                 ret = PICOKEYS_ERR_MEMORY_FATAL;
+                log_errstr("vault container delete: legacy label commit failed timeout_ms=%u", PICOKEYS_VAULT_COMMIT_TIMEOUT_MS);
+            }
+            else if (ret != PICOKEYS_OK) {
+                log_errstr("vault container delete: legacy label cleanup failed ret=%d", ret);
             }
         }
         return ret;
     }
     if (ret != PICOKEYS_OK) {
+        log_errstr("vault container delete: container load failed ret=%d app_id=%u", ret, app_id);
         return ret;
     }
     file_object_container_candidate_t *current = &state.candidates[state.current_slot];
@@ -459,12 +518,14 @@ int picokeys_vault_delete_kvault(uint8_t app_id) {
     if (ret != PICOKEYS_OK) {
         file_object_container_candidate_t *previous = &state.candidates[current->slot ^ 1u];
         if (!previous->valid || file_object_container_validate(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, previous, state.crypto.protector) != PICOKEYS_OK) {
+            log_errstr("vault container delete: current and previous container validation failed current_slot=%u", current->slot);
             return ret;
         }
         current = previous;
     }
     const file_object_descriptor_t *wrap = file_object_container_find(&current->manifest, PICOKEYS_VAULT_OBJECT_WRAP, app_id);
     if (!wrap) {
+        log_errstr("vault container delete: wrap record missing app_id=%u", app_id);
         return PICOKEYS_ERR_FILE_NOT_FOUND;
     }
     uint16_t wrap_count = 0;
@@ -474,7 +535,13 @@ int picokeys_vault_delete_kvault(uint8_t app_id) {
         }
     }
     if (wrap_count == 1) {
-        return file_object_container_delete(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL);
+        ret = file_object_container_delete(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL);
     }
-    return file_object_container_remove(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, PICOKEYS_VAULT_OBJECT_WRAP, app_id, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL);
+    else {
+        ret = file_object_container_remove(vault_state.layout, PICOKEYS_VAULT_CONTAINER_ID, PICOKEYS_VAULT_OBJECT_WRAP, app_id, &vault_state.primary, vault_state.has_legacy ? &vault_state.legacy : NULL);
+    }
+    if (ret != PICOKEYS_OK) {
+        log_errstr("vault container delete: object deletion failed ret=%d app_id=%u wrap_count=%u", ret, app_id, wrap_count);
+    }
+    return ret;
 }

@@ -45,6 +45,7 @@ set(USB_ITF_CCID 1)
 set(USB_ITF_WCID 1)
 include(cmake/version.cmake)
 include(cmake/options.cmake OPTIONAL)
+
 include(picokeys_sdk_import.cmake)
 if(NOT ESP_PLATFORM)
     set(SOURCES ${PICOKEYS_SOURCES})

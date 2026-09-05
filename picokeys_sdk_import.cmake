@@ -151,6 +151,10 @@ if(ESP_PLATFORM)
 endif()
 add_compile_definitions(DEBUG_APDU=${DEBUG_APDU})
 add_compile_definitions(MBEDTLS_CONFIG_FILE="${CMAKE_CURRENT_LIST_DIR}/config/mbedtls_config.h")
+if (ENABLE_DIAGNOSTICS)
+    add_compile_definitions(ENABLE_DIAGNOSTICS=1)
+    message(STATUS "Persistent diagnostics:\t enabled")
+endif()
 
 message(STATUS "USB VID/PID:\t\t\t ${USB_VID}:${USB_PID}")
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/deps.cmake)
@@ -373,6 +377,7 @@ list(APPEND PICOKEYS_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/eac.c
     ${CMAKE_CURRENT_LIST_DIR}/src/crypto_utils.c
     ${CMAKE_CURRENT_LIST_DIR}/src/tlv.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/debug.c
     ${CMAKE_CURRENT_LIST_DIR}/src/apdu.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rescue.c
     ${CMAKE_CURRENT_LIST_DIR}/src/serial.c

@@ -444,6 +444,29 @@ static int cmd_read(void) {
             res_APDU_size += put_uint32_be((uint32_t)tv_sec, res_APDU);
         }
     }
+#ifdef ENABLE_DIAGNOSTICS
+    else if (p1 == 0x5) { // LAST ERROR
+        file_t *file = file_search(DEBUG_LAST_ERROR_FID);
+        if (!file || !file_has_data(file)) {
+            return SW_FILE_NOT_FOUND();
+        }
+        uint32_t file_size = file_get_size(file);
+        if (file_size > DEBUG_LAST_ERROR_STRING_SIZE) {
+            return SW_DATA_INVALID();
+        }
+        const uint8_t *message = file_get_data(file);
+        while (file_size > 0 && message[file_size - 1] == 0) {
+            file_size--;
+        }
+        res_APDU_size = (uint16_t)file_size;
+        memcpy(res_APDU, message, res_APDU_size);
+        char cleared_message[DEBUG_LAST_ERROR_STRING_SIZE] = {0};
+        int ret = file_put_data(file, CONST_BYTE_ARRAY((const uint8_t *)cleared_message, sizeof(cleared_message)));
+        if (ret == PICOKEYS_OK) {
+            flash_commit();
+        }
+    }
+#endif
     else {
         return SW_INCORRECT_P1P2();
     }
