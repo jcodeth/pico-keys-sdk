@@ -43,6 +43,7 @@
 
 static const uint8_t vault_id_domain[] = "PicoKeys Vault ID v1";
 static const uint8_t vault_enroll_info[] = "PicoKeys Vault enrollment v1";
+static const uint8_t vault_enrollment_hpke_info[] = "PicoKeys Vault enrollment v2";
 static const uint8_t picokeys_vault_ca_der[] = {
     0x30, 0x82, 0x01, 0xEB, 0x30, 0x82, 0x01, 0x6B, 0xA0, 0x03, 0x02, 0x01,
     0x02, 0x02, 0x14, 0x2B, 0x37, 0x6A, 0xC8, 0x98, 0x74, 0xE5, 0x0E, 0x80,
@@ -287,7 +288,193 @@ static int vault_x448_shared(const uint8_t private_key[PICOKEYS_VAULT_X448_BYTES
         log_errstr("vault enrollment: X448 shared secret length invalid actual=%zu expected=%u", shared_len, PICOKEYS_VAULT_X448_BYTES);
         return PICOKEYS_WRONG_LENGTH;
     }
+    uint8_t nonzero = 0;
+    for (size_t i = 0; i < PICOKEYS_VAULT_X448_BYTES; i++) {
+        nonzero |= shared[i];
+    }
+    if (nonzero == 0) {
+        mbedtls_platform_zeroize(shared, PICOKEYS_VAULT_X448_BYTES);
+        log_errstr("vault enrollment: X448 shared secret is all zero");
+        return PICOKEYS_VERIFICATION_FAILED;
+    }
     return PICOKEYS_OK;
+}
+
+#define VAULT_HPKE_NH 64u
+#define VAULT_HPKE_NK 32u
+#define VAULT_HPKE_NN 12u
+#define VAULT_HPKE_NT 16u
+#define VAULT_HPKE_KEM_SUITE_ID_LEN 5u
+#define VAULT_HPKE_SUITE_ID_LEN 10u
+#define VAULT_HPKE_EXPAND_INFO_MAX 256u
+#define VAULT_HPKE_LABELED_INPUT_MAX 256u
+
+static int vault_hpke_hkdf_extract(const uint8_t *salt, size_t salt_len, const uint8_t *ikm, size_t ikm_len, uint8_t prk[VAULT_HPKE_NH]) {
+    const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA512);
+    uint8_t zero_salt[VAULT_HPKE_NH] = { 0 };
+    if (!md || !prk || (!salt && salt_len > 0) || (!ikm && ikm_len > 0) || salt_len > VAULT_HPKE_NH) {
+        return PICOKEYS_WRONG_DATA;
+    }
+    if (salt_len == 0) {
+        salt = zero_salt;
+        salt_len = sizeof(zero_salt);
+    }
+    int ret = mbedtls_md_hmac(md, salt, salt_len, ikm, ikm_len, prk);
+    mbedtls_platform_zeroize(zero_salt, sizeof(zero_salt));
+    return ret == 0 ? PICOKEYS_OK : PICOKEYS_EXEC_ERROR;
+}
+
+static int vault_hpke_hkdf_expand(const uint8_t prk[VAULT_HPKE_NH], const uint8_t *info, size_t info_len, uint8_t *output, size_t output_len) {
+    const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA512);
+    uint8_t input[VAULT_HPKE_NH + VAULT_HPKE_EXPAND_INFO_MAX + 1u] = { 0 };
+    uint8_t previous[VAULT_HPKE_NH] = { 0 };
+    if (!md || !prk || (!info && info_len > 0) || (!output && output_len > 0) || info_len > VAULT_HPKE_EXPAND_INFO_MAX || output_len > 255u * VAULT_HPKE_NH) {
+        return PICOKEYS_WRONG_DATA;
+    }
+
+    size_t written = 0;
+    uint8_t counter = 1;
+    int ret = 0;
+    while (written < output_len) {
+        size_t input_len = 0;
+        if (counter > 1) {
+            memcpy(input, previous, sizeof(previous));
+            input_len = sizeof(previous);
+        }
+        if (info_len > 0) {
+            memcpy(input + input_len, info, info_len);
+            input_len += info_len;
+        }
+        input[input_len++] = counter;
+        ret = mbedtls_md_hmac(md, prk, VAULT_HPKE_NH, input, input_len, previous);
+        if (ret != 0) {
+            break;
+        }
+        size_t copy_len = output_len - written;
+        if (copy_len > sizeof(previous)) {
+            copy_len = sizeof(previous);
+        }
+        memcpy(output + written, previous, copy_len);
+        written += copy_len;
+        counter++;
+    }
+    mbedtls_platform_zeroize(input, sizeof(input));
+    mbedtls_platform_zeroize(previous, sizeof(previous));
+    return ret == 0 ? PICOKEYS_OK : PICOKEYS_EXEC_ERROR;
+}
+
+static int vault_hpke_labeled_extract(const uint8_t *suite_id, size_t suite_id_len, const uint8_t *salt, size_t salt_len, const uint8_t *label, size_t label_len, const uint8_t *ikm, size_t ikm_len, uint8_t output[VAULT_HPKE_NH]) {
+    static const uint8_t version[] = "HPKE-v1";
+    uint8_t labeled_ikm[VAULT_HPKE_LABELED_INPUT_MAX] = { 0 };
+    size_t labeled_len = sizeof(version) - 1u + suite_id_len + label_len + ikm_len;
+    if (!suite_id || suite_id_len == 0 || (!label && label_len > 0) || (!ikm && ikm_len > 0) || labeled_len > sizeof(labeled_ikm)) {
+        return PICOKEYS_WRONG_DATA;
+    }
+    memcpy(labeled_ikm, version, sizeof(version) - 1u);
+    memcpy(labeled_ikm + sizeof(version) - 1u, suite_id, suite_id_len);
+    memcpy(labeled_ikm + sizeof(version) - 1u + suite_id_len, label, label_len);
+    memcpy(labeled_ikm + sizeof(version) - 1u + suite_id_len + label_len, ikm, ikm_len);
+    int ret = vault_hpke_hkdf_extract(salt, salt_len, labeled_ikm, labeled_len, output);
+    mbedtls_platform_zeroize(labeled_ikm, sizeof(labeled_ikm));
+    return ret;
+}
+
+static int vault_hpke_labeled_expand(const uint8_t *suite_id, size_t suite_id_len, const uint8_t prk[VAULT_HPKE_NH], const uint8_t *label, size_t label_len, const uint8_t *info, size_t info_len, uint8_t *output, size_t output_len) {
+    static const uint8_t version[] = "HPKE-v1";
+    uint8_t labeled_info[VAULT_HPKE_EXPAND_INFO_MAX] = { 0 };
+    size_t labeled_len = 2u + sizeof(version) - 1u + suite_id_len + label_len + info_len;
+    if (!suite_id || suite_id_len == 0 || !prk || (!label && label_len > 0) || (!info && info_len > 0) || !output || output_len > 0xffffu || labeled_len > sizeof(labeled_info)) {
+        return PICOKEYS_WRONG_DATA;
+    }
+    labeled_info[0] = (uint8_t)(output_len >> 8);
+    labeled_info[1] = (uint8_t)output_len;
+    memcpy(labeled_info + 2u, version, sizeof(version) - 1u);
+    memcpy(labeled_info + 2u + sizeof(version) - 1u, suite_id, suite_id_len);
+    memcpy(labeled_info + 2u + sizeof(version) - 1u + suite_id_len, label, label_len);
+    memcpy(labeled_info + 2u + sizeof(version) - 1u + suite_id_len + label_len, info, info_len);
+    int ret = vault_hpke_hkdf_expand(prk, labeled_info, labeled_len, output, output_len);
+    mbedtls_platform_zeroize(labeled_info, sizeof(labeled_info));
+    return ret;
+}
+
+static int vault_hpke_auth_decap(const uint8_t enc[PICOKEYS_VAULT_X448_BYTES], const uint8_t recipient_private[PICOKEYS_VAULT_X448_BYTES], const uint8_t recipient_public[PICOKEYS_VAULT_X448_BYTES], const uint8_t sender_public[PICOKEYS_VAULT_X448_BYTES], const uint8_t *info, size_t info_len, const uint8_t *aad, size_t aad_len, const uint8_t *ciphertext, size_t ciphertext_len, uint8_t *plaintext) {
+    static const uint8_t kem_suite_id[VAULT_HPKE_KEM_SUITE_ID_LEN] = { 'K', 'E', 'M', 0x00, 0x21 };
+    static const uint8_t hpke_suite_id[VAULT_HPKE_SUITE_ID_LEN] = { 'H', 'P', 'K', 'E', 0x00, 0x21, 0x00, 0x03, 0x00, 0x02 };
+    static const uint8_t eae_prk_label[] = "eae_prk";
+    static const uint8_t shared_secret_label[] = "shared_secret";
+    static const uint8_t psk_id_hash_label[] = "psk_id_hash";
+    static const uint8_t info_hash_label[] = "info_hash";
+    static const uint8_t secret_label[] = "secret";
+    static const uint8_t key_label[] = "key";
+    static const uint8_t base_nonce_label[] = "base_nonce";
+    static const uint8_t empty[] = { 0 };
+    uint8_t dh[PICOKEYS_VAULT_X448_BYTES * 2u] = { 0 };
+    uint8_t kem_context[PICOKEYS_VAULT_X448_BYTES * 3u] = { 0 };
+    uint8_t eae_prk[VAULT_HPKE_NH] = { 0 };
+    uint8_t shared_secret[VAULT_HPKE_NH] = { 0 };
+    uint8_t psk_id_hash[VAULT_HPKE_NH] = { 0 };
+    uint8_t info_hash[VAULT_HPKE_NH] = { 0 };
+    uint8_t key_schedule_context[1u + VAULT_HPKE_NH * 2u] = { 0 };
+    uint8_t secret[VAULT_HPKE_NH] = { 0 };
+    uint8_t key[VAULT_HPKE_NK] = { 0 };
+    uint8_t nonce[VAULT_HPKE_NN] = { 0 };
+    if (!enc || !recipient_private || !recipient_public || !sender_public || (!info && info_len > 0) || (!aad && aad_len > 0) || !ciphertext || !plaintext || ciphertext_len < VAULT_HPKE_NT) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    int ret = vault_x448_shared(recipient_private, enc, dh);
+    if (ret == PICOKEYS_OK) {
+        ret = vault_x448_shared(recipient_private, sender_public, dh + PICOKEYS_VAULT_X448_BYTES);
+    }
+    if (ret == PICOKEYS_OK) {
+        memcpy(kem_context, enc, PICOKEYS_VAULT_X448_BYTES);
+        memcpy(kem_context + PICOKEYS_VAULT_X448_BYTES, recipient_public, PICOKEYS_VAULT_X448_BYTES);
+        memcpy(kem_context + PICOKEYS_VAULT_X448_BYTES * 2u, sender_public, PICOKEYS_VAULT_X448_BYTES);
+        ret = vault_hpke_labeled_extract(kem_suite_id, sizeof(kem_suite_id), NULL, 0, eae_prk_label, sizeof(eae_prk_label) - 1u, dh, sizeof(dh), eae_prk);
+    }
+    if (ret == PICOKEYS_OK) {
+        ret = vault_hpke_labeled_expand(kem_suite_id, sizeof(kem_suite_id), eae_prk, shared_secret_label, sizeof(shared_secret_label) - 1u, kem_context, sizeof(kem_context), shared_secret, sizeof(shared_secret));
+    }
+    if (ret == PICOKEYS_OK) {
+        ret = vault_hpke_labeled_extract(hpke_suite_id, sizeof(hpke_suite_id), NULL, 0, psk_id_hash_label, sizeof(psk_id_hash_label) - 1u, empty, 0, psk_id_hash);
+    }
+    if (ret == PICOKEYS_OK) {
+        ret = vault_hpke_labeled_extract(hpke_suite_id, sizeof(hpke_suite_id), NULL, 0, info_hash_label, sizeof(info_hash_label) - 1u, info, info_len, info_hash);
+    }
+    if (ret == PICOKEYS_OK) {
+        key_schedule_context[0] = 0x02;
+        memcpy(key_schedule_context + 1u, psk_id_hash, sizeof(psk_id_hash));
+        memcpy(key_schedule_context + 1u + sizeof(psk_id_hash), info_hash, sizeof(info_hash));
+        ret = vault_hpke_labeled_extract(hpke_suite_id, sizeof(hpke_suite_id), shared_secret, sizeof(shared_secret), secret_label, sizeof(secret_label) - 1u, empty, 0, secret);
+    }
+    if (ret == PICOKEYS_OK) {
+        ret = vault_hpke_labeled_expand(hpke_suite_id, sizeof(hpke_suite_id), secret, key_label, sizeof(key_label) - 1u, key_schedule_context, sizeof(key_schedule_context), key, sizeof(key));
+    }
+    if (ret == PICOKEYS_OK) {
+        ret = vault_hpke_labeled_expand(hpke_suite_id, sizeof(hpke_suite_id), secret, base_nonce_label, sizeof(base_nonce_label) - 1u, key_schedule_context, sizeof(key_schedule_context), nonce, sizeof(nonce));
+    }
+    if (ret == PICOKEYS_OK) {
+        mbedtls_gcm_context gcm;
+        mbedtls_gcm_init(&gcm);
+        ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 256);
+        if (ret == 0) {
+            ret = mbedtls_gcm_auth_decrypt(&gcm, ciphertext_len - VAULT_HPKE_NT, nonce, sizeof(nonce), aad, aad_len, ciphertext + ciphertext_len - VAULT_HPKE_NT, VAULT_HPKE_NT, ciphertext, plaintext);
+        }
+        mbedtls_gcm_free(&gcm);
+        if (ret != 0) {
+            log_errstr("vault enrollment: HPKE authentication failed ret=%d ciphertext_len=%zu", ret, ciphertext_len);
+        }
+    }
+    mbedtls_platform_zeroize(dh, sizeof(dh));
+    mbedtls_platform_zeroize(kem_context, sizeof(kem_context));
+    mbedtls_platform_zeroize(eae_prk, sizeof(eae_prk));
+    mbedtls_platform_zeroize(shared_secret, sizeof(shared_secret));
+    mbedtls_platform_zeroize(psk_id_hash, sizeof(psk_id_hash));
+    mbedtls_platform_zeroize(info_hash, sizeof(info_hash));
+    mbedtls_platform_zeroize(key_schedule_context, sizeof(key_schedule_context));
+    mbedtls_platform_zeroize(secret, sizeof(secret));
+    mbedtls_platform_zeroize(key, sizeof(key));
+    mbedtls_platform_zeroize(nonce, sizeof(nonce));
+    return ret == 0 ? PICOKEYS_OK : PICOKEYS_VERIFICATION_FAILED;
 }
 
 static bool picokeys_vault_enrollment_active(void) {
@@ -431,16 +618,17 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
     *metadata_len = 0;
     uint16_t certificate_len = ((uint16_t)packet[0] << 8) | packet[1];
     size_t certificate_offset = 2;
-    size_t encrypted_offset = certificate_offset + certificate_len;
-    if (certificate_len == 0 || certificate_len > PICOKEYS_VAULT_ENROLL_CERT_MAX || encrypted_offset > packet_len || packet_len < encrypted_offset + 12u + 16u + PICOKEYS_VAULT_KEY_SIZE) {
-        log_errstr("vault enrollment: invalid certificate length=%u packet_len=%zu encrypted_offset=%zu", certificate_len, packet_len, encrypted_offset);
+    size_t encapsulated_offset = certificate_offset + certificate_len;
+    size_t ciphertext_offset = encapsulated_offset + PICOKEYS_VAULT_X448_BYTES;
+    if (certificate_len == 0 || certificate_len > PICOKEYS_VAULT_ENROLL_CERT_MAX || ciphertext_offset > packet_len || packet_len < ciphertext_offset + 16u + PICOKEYS_VAULT_KEY_SIZE) {
+        log_errstr("vault enrollment: invalid certificate length=%u packet_len=%zu ciphertext_offset=%zu", certificate_len, packet_len, ciphertext_offset);
         picokeys_vault_enrollment_reset();
         return PICOKEYS_WRONG_LENGTH;
     }
 
-    size_t encrypted_len = packet_len - encrypted_offset - 12u;
-    if (encrypted_len < PICOKEYS_VAULT_KEY_SIZE + 16u || encrypted_len > PICOKEYS_VAULT_ENROLL_PLAIN_MAX + 16u) {
-        log_errstr("vault enrollment: invalid encrypted payload length=%zu min=%u max=%u", encrypted_len, PICOKEYS_VAULT_KEY_SIZE + 16u, PICOKEYS_VAULT_ENROLL_PLAIN_MAX + 16u);
+    size_t ciphertext_len = packet_len - ciphertext_offset;
+    if (ciphertext_len < PICOKEYS_VAULT_KEY_SIZE + 16u || ciphertext_len > PICOKEYS_VAULT_ENROLL_PLAIN_MAX + 16u) {
+        log_errstr("vault enrollment: invalid ciphertext length=%zu min=%u max=%u", ciphertext_len, PICOKEYS_VAULT_KEY_SIZE + 16u, PICOKEYS_VAULT_ENROLL_PLAIN_MAX + 16u);
         picokeys_vault_enrollment_reset();
         return PICOKEYS_WRONG_LENGTH;
     }
@@ -469,41 +657,12 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
         return PICOKEYS_VERIFICATION_FAILED;
     }
 
-    uint8_t shared[PICOKEYS_VAULT_X448_BYTES] = { 0 };
-    uint8_t session_key[PICOKEYS_VAULT_KEY_SIZE] = { 0 };
-    uint8_t info[sizeof(vault_enroll_info) - 1 + PICOKEYS_VAULT_ENROLL_CHALLENGE_BYTES + PICOKEYS_VAULT_X448_BYTES * 2] = { 0 };
-    memcpy(info, vault_enroll_info, sizeof(vault_enroll_info) - 1);
-    memcpy(info + sizeof(vault_enroll_info) - 1, vault_enroll_challenge, PICOKEYS_VAULT_ENROLL_CHALLENGE_BYTES);
-    memcpy(info + sizeof(vault_enroll_info) - 1 + PICOKEYS_VAULT_ENROLL_CHALLENGE_BYTES, certificate_public, PICOKEYS_VAULT_X448_BYTES);
-    memcpy(info + sizeof(vault_enroll_info) - 1 + PICOKEYS_VAULT_ENROLL_CHALLENGE_BYTES + PICOKEYS_VAULT_X448_BYTES, vault_enroll_public, PICOKEYS_VAULT_X448_BYTES);
-
-    ret = vault_x448_shared(vault_enroll_private, certificate_public, shared);
-    if (ret == PICOKEYS_OK) {
-        ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), NULL, 0, shared, sizeof(shared), info, sizeof(info), session_key, sizeof(session_key));
-        if (ret != 0) {
-            log_errstr("vault enrollment: session key derivation failed: %d", ret);
-        }
-    }
-
     uint8_t enrollment_plain[PICOKEYS_VAULT_ENROLL_PLAIN_MAX] = { 0 };
-    size_t plain_len = encrypted_len - 16u;
-    const uint8_t *enrollment_cipher = packet + encrypted_offset + 12u;
-    const uint8_t *enrollment_tag = packet + encrypted_offset + 12u + plain_len;
-    if (ret == PICOKEYS_OK) {
-        mbedtls_gcm_context gcm;
-        mbedtls_gcm_init(&gcm);
-        ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, session_key, 256);
-        if (ret != 0) {
-            log_errstr("vault enrollment: payload cipher setup failed: %d", ret);
-        }
-        if (ret == 0) {
-            ret = mbedtls_gcm_auth_decrypt(&gcm, plain_len, packet + encrypted_offset, 12u, info, sizeof(info), enrollment_tag, 16u, enrollment_cipher, enrollment_plain);
-            if (ret != 0) {
-                log_errstr("vault enrollment: payload authentication failed: %d", ret);
-            }
-        }
-        mbedtls_gcm_free(&gcm);
-    }
+    size_t plain_len = ciphertext_len - 16u;
+    uint8_t info[sizeof(vault_enrollment_hpke_info) - 1u + PICOKEYS_VAULT_ENROLL_CHALLENGE_BYTES] = { 0 };
+    memcpy(info, vault_enrollment_hpke_info, sizeof(vault_enrollment_hpke_info) - 1u);
+    memcpy(info + sizeof(vault_enrollment_hpke_info) - 1u, vault_enroll_challenge, PICOKEYS_VAULT_ENROLL_CHALLENGE_BYTES);
+    ret = vault_hpke_auth_decap(packet + encapsulated_offset, vault_enroll_private, vault_enroll_public, certificate_public, info, sizeof(info), packet + certificate_offset, certificate_len, packet + ciphertext_offset, ciphertext_len, enrollment_plain);
 
     size_t plain_metadata_len = 0;
     if (ret == 0 && plain_len == PICOKEYS_VAULT_KEY_SIZE) {
@@ -529,8 +688,6 @@ int picokeys_vault_enrollment_decode(const uint8_t *packet, size_t packet_len, u
         *metadata_len = plain_metadata_len;
     }
 
-    mbedtls_platform_zeroize(shared, sizeof(shared));
-    mbedtls_platform_zeroize(session_key, sizeof(session_key));
     mbedtls_platform_zeroize(info, sizeof(info));
     mbedtls_platform_zeroize(certificate_public, sizeof(certificate_public));
     mbedtls_platform_zeroize(enrollment_plain, sizeof(enrollment_plain));
