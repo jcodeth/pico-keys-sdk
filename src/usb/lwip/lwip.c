@@ -34,7 +34,7 @@ The MCU appears to the host as IP address 192.168.7.1, and provides a DHCP serve
 */
 /*
 Some smartphones *may* work with this implementation as well, but likely have limited (broken) drivers,
-and likely their manufacturer has not tested such functionality.  Some code workarounds could be tried:
+and likely their manufacturer has not tested such functionality. Some code workarounds could be tried:
 
 The smartphone may only have an ECM driver, but refuse to automatically pick ECM (unlike the OSes above);
 try modifying ./examples/devices/net_lwip_webserver/usb_descriptors.c so that CONFIG_ID_ECM is default.
